@@ -202,26 +202,71 @@ def text_to_image_retrieval():
 
 
 # ==================================================
-# PART 6: Understanding Embeddings
+# PART 6: Embedding Space Analysis
 # ==================================================
 
 
-def explore_embeddings():
+def embedding_space_analysis():
     """Explore CLIPs embedding space"""
-    print("\n=== Understanding Embeddings ===\n")
+    print("\n=== Embedding Space Analysis ===\n")
     model, preprocess = clip.load("ViT-B/32", device=device)
 
-    texts = ["a dog", "a puppy", "a cat", "a kitten", "a car", "a vehicle"]
+    concepts = {
+        "animals": ["dog", "cat", "bird", "fish", "horse"],
+        "vehicles": ["car", "truck", "airplane", "boat", "bicycle"],
+        "food": ["pizza", "burger", "salad", "pasta", "sushi"],
+        "furniture": ["chair", "table", "sofa", "bed", "desk"],
+    }
+
+    texts = []
+    category = []
+
+    for cat, items in concepts.items():
+        for item in items:
+            texts.append(f"a photo of a {item}")
+            category.append(cat)
+
     text_tokens = clip.tokenize(texts).to(device)
 
     with torch.no_grad():
         text_features = model.encode_text(text_tokens)
         text_features /= text_features.norm(dim=-1, keepdim=True)
 
-    for i in range(len(texts)):
-        for j in range(i + 1, len(texts)):
-            similarity = (text_features[i] @ text_features[j].T).item()
-            print(f"Similarity between '{texts[i]}' and '{texts[j]}': {similarity:.4f}")
+    similarity_matrix = (text_features @ text_features.T).cpu().numpy()
+
+    print("Intra-category similarities (should be high):")
+    start_idx = 0
+    for category, items in concepts.items():
+        end_idx = start_idx + len(items)
+        category_sims = similarity_matrix[start_idx:end_idx, start_idx:end_idx]
+
+        # Get off-diagonal similarities (within category)
+        mask = np.ones_like(category_sims, dtype=bool)
+        np.fill_diagonal(mask, False)
+        avg_sim = category_sims[mask].mean()
+
+        print(f"{category:10s}: {avg_sim:.4f}")
+        start_idx = end_idx
+
+    print("\nInter-category similarities (should be lower):")
+    categories = list(concepts.keys())
+    for i in range(len(categories)):
+        for j in range(i + 1, len(categories)):
+            cat1 = categories[i]
+            cat2 = categories[j]
+
+            items1 = concepts[cat1]
+            items2 = concepts[cat2]
+
+            idx1_start = sum(len(concepts[c]) for c in categories[:i])
+            idx1_end = idx1_start + len(items1)
+            idx2_start = sum(len(concepts[c]) for c in categories[:j])
+            idx2_end = idx2_start + len(items2)
+
+            inter_sims = similarity_matrix[idx1_start:idx1_end, idx2_start:idx2_end]
+            avg_sim = inter_sims.mean()
+
+            print(f"{cat1:10s} - {cat2:10s}: {avg_sim:.4f}")
 
 
 # ===================================================
@@ -289,6 +334,115 @@ def performance_benchmark():
         print(f"- Reserved: {memory_reserved:.2f} GB")
 
 
+# ============================================
+# PART 8: Temperature Scaling Analysis
+# ============================================
+
+
+def temperature_scaling_analysis():
+    """Analyze the effect of temperature scaling on CLIP similarity scores"""
+    # Key insight: Lower temperatures make the model more confident (sharper distributions), while higher temperatures lead to more uniform distributions.
+
+    print("\n=== Temperature Scaling Analysis ===\n")
+    model, preprocess = clip.load("ViT-B/32", device=device)
+
+    image_filenames = [
+        "./data/clip_test_images/dog.jpg",
+        "./data/clip_test_images/cat.jpg",
+        "./data/clip_test_images/bird.jpg",
+    ]
+    images = [preprocess(Image.open(fn)).unsqueeze(0).to(device) for fn in image_filenames]  # type: ignore
+    text_labels = ["a dog", "a cat", "a bird"]
+
+    text_tokens = clip.tokenize(text_labels).to(device)
+
+    with torch.no_grad():
+        image_features = torch.cat([model.encode_image(img) for img in images], dim=0)
+        image_features /= image_features.norm(dim=-1, keepdim=True)
+
+        text_features = model.encode_text(text_tokens)
+        text_features /= text_features.norm(dim=-1, keepdim=True)
+
+        # Raw similarity (before temperature/softmax)
+        logits = 100.0 * image_features @ text_features.T
+        print("Raw similarity scores (logits):")
+        for i, label in enumerate(text_labels):
+            print(f"  {label:20s}: {logits[0][i].item():.4f}")
+
+        print("\nProbabilities with different temperatures:")
+        temperatures = [0.01, 0.1, 1.0, 10.0, 100.0]
+
+        for temp in temperatures:
+            similarity = (logits / temp).softmax(dim=-1)
+            print(f"\nTemperature: {temp}")
+            for i, query in enumerate(text_labels):
+                values, indices = similarity[i].topk(2)
+                print(f"Top images for query '{query}':")
+                for value, index in zip(values, indices):
+                    print(f"Image: {image_filenames[index.item()]:30s} : {100*value.item():.2f}%")
+
+
+# ============================================
+# PART 9: Prompt Engineering Deep Dive
+# ============================================
+
+
+def prompt_engineering_deep_dive():
+    """Systematic Analysis of Prompt Engineering Strategies"""
+    print("\n=== Prompt Engineering Deep Dive ===\n")
+    model, preprocess = clip.load("ViT-B/32", device=device)
+
+    dataset = CIFAR10(root="./data", download=True, train=False)
+
+    prompt_strategies = {
+        "simple": [f"{c}" for c in dataset.classes],
+        "detailed": [f"a photo of a {c}" for c in dataset.classes],
+        "photo_of_the": [f"a photo of the {c}" for c in dataset.classes],
+        "photo_of_a_small": [f"a photo of a small {c}" for c in dataset.classes],
+        "photo_of_a_large": [f"a photo of a large {c}" for c in dataset.classes],
+        "blurry_photo": [f"a blurry photo of a {c}" for c in dataset.classes],
+        "good_photo": [f"a good photo of a {c}" for c in dataset.classes],
+        "contextual": [f"a high-resolution image of a {c} in nature" for c in dataset.classes],
+        "humorous": [f"a funny picture of a {c}" for c in dataset.classes],
+    }
+
+    results = {}
+    num_samples = 1000  # Use subset for speed
+
+    for strategy_name, prompts in prompt_strategies.items():
+        print(f"\nEvaluating strategy '{strategy_name}': {prompts[0]}")
+
+        text_tokens = clip.tokenize(prompts).to(device)
+
+        correct = 0
+        with torch.no_grad():
+            text_features = model.encode_text(text_tokens)
+            text_features /= text_features.norm(dim=-1, keepdim=True)
+
+            for i in tqdm(range(num_samples)):
+                image, label = dataset[i]
+                image_input = preprocess(image).unsqueeze(0).to(device)
+
+                image_features = model.encode_image(image_input)
+                image_features /= image_features.norm(dim=-1, keepdim=True)
+
+                similarity = (100.0 * image_features @ text_features.T).softmax(dim=-1)
+                predicted_index = similarity[0].argmax().item()
+
+                if predicted_index == label:
+                    correct += 1
+
+        accuracy = 100 * correct / num_samples
+        results[strategy_name] = accuracy
+        print(f"Accuracy with strategy '{strategy_name}': {accuracy:.2f}%")
+
+    print("=" * 50)
+    print("Ranking by Accuracy:")
+    print("=" * 50)
+    for template_name, acc in sorted(results.items(), key=lambda x: x[1], reverse=True):
+        print(f"{template_name:30s} {acc:6.2f}%")
+
+
 # ===================================================
 # MAIN EXECUTION
 # ===================================================
@@ -299,16 +453,20 @@ if __name__ == "__main__":
     print("CLIP EXPLORATION")
     print("=" * 50)
 
-    model_exploration()
+    # model_exploration()
 
-    zero_shot_classification()
+    # zero_shot_classification()
 
-    cifar_zero_shot()
+    # cifar_zero_shot()
 
-    mnist_zero_shot()
+    # mnist_zero_shot()
 
-    text_to_image_retrieval()
+    # text_to_image_retrieval()
 
-    explore_embeddings()
+    embedding_space_analysis()
 
-    performance_benchmark()
+    # performance_benchmark()
+
+    # temperature_scaling_analysis()
+
+    # prompt_engineering_deep_dive()
