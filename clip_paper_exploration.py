@@ -453,20 +453,20 @@ if __name__ == "__main__":
     print("CLIP EXPLORATION")
     print("=" * 50)
 
-    # model_exploration()
+    model_exploration()
 
-    # zero_shot_classification()
+    zero_shot_classification()
 
-    # cifar_zero_shot()
+    cifar_zero_shot()
 
-    # mnist_zero_shot()
+    mnist_zero_shot()
 
-    # text_to_image_retrieval()
+    text_to_image_retrieval()
 
     embedding_space_analysis()
 
-    # performance_benchmark()
+    performance_benchmark()
 
-    # temperature_scaling_analysis()
+    temperature_scaling_analysis()
 
-    # prompt_engineering_deep_dive()
+    prompt_engineering_deep_dive()
