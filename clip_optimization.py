@@ -145,7 +145,7 @@ def demo_text_caching() -> TextEmbeddingCache:
 # ===========================================
 
 
-def benchmark_fp16_quantization() -> None:
+def fp16_quantization_benchmark() -> None:
     """Compare FP32 vs FP16 inference performance across different batch sizes"""
     print("\n=== FP16 Quantization Benchmark ===\n")
 
@@ -251,11 +251,258 @@ def benchmark_fp16_quantization() -> None:
     print(f"Difference: {diff:.6f}")
 
 
+# ===========================================
+# OPTIMIZATION 3: Batch Processing Benchmark
+# ===========================================
+
+
+def batch_processing_benchmark() -> None:
+    """Benchmark batch processing performance"""
+    print("\n=== Batch Processing Benchmark ===\n")
+
+    model, preprocess = clip.load("ViT-B/32", device=device)
+    model.eval()
+
+    # Generate dummy images
+    num_images = 100
+    dummy_images = [torch.randn(3, 224, 224) for i in range(num_images)]
+
+    # Benchmark single image processing
+    print("\n--- Single Image Processing (batch=1) ---")
+    start_time = time.time()
+    results_single = []
+    for img in dummy_images:
+        img_batch = img.unsqueeze(0).to(device)
+        with torch.no_grad():
+            img_features = model.encode_image(img_batch)
+            results_single.append(img_features)
+    duration_single = time.time() - start_time
+    throughput_single = num_images / duration_single
+    print(f"Time for {num_images} images: {duration_single:.3f}s")
+    print(f"Throughput: {throughput_single:.2f} images/sec\n")
+
+    # Benchmark batch image processing
+    print("\n--- Batch Image Processing ---")
+
+    batch_sizes = [1, 4, 8, 16, 32, 64]
+
+    print("\n" + "=" * 50)
+    print(f"{'Batch Size':<12} {'Time (s)':<12} {'Images/sec':<12} {'Speedup (x)':<12}")
+    print("=" * 50)
+
+    for batch_size in batch_sizes:
+        start_time = time.time()
+        results_batch = []
+
+        for i in range(0, num_images, batch_size):
+            img_batch = torch.stack(dummy_images[i : i + batch_size]).to(device)
+            with torch.no_grad():
+                img_features = model.encode_image(img_batch)
+                results_batch.append(img_features)
+        duration_batch = time.time() - start_time
+        throughput_batch = num_images / duration_batch
+        speedup = throughput_batch / throughput_single
+
+        print(f"{batch_size:<12} {duration_batch:<12.3f} {throughput_batch:<12.2f} {speedup:.2f}x")
+
+    print("=" * 50)
+
+
+# ===========================================
+# OPTIMIZATION 4: Model Variants Benchmark
+# ===========================================
+
+
+def model_variants_benchmark() -> None:
+    """Benchmark different CLIP model variants"""
+    print("\n=== Model Variants Benchmark ===\n")
+
+    model_names = [
+        "RN50",  # ResNet-50
+        "RN101",  # ResNet-101
+        "ViT-B/16",  # Vision Transformer Base 16
+        "ViT-B/32",  # Vision Transformer Base 32
+        "ViT-L/14",  # Vision Transformer Large 14
+    ]
+    batch_size = 16
+    num_runs = 30
+
+    print("\n" + "=" * 70)
+    print(f"{'Model':<15} {'Time (s)':<12} {'Images/sec':<12}")
+    print("=" * 70)
+
+    for model_name in model_names:
+        model, preprocess = clip.load(model_name, device=device)
+        model.eval()
+
+        dummy_image = torch.randn(batch_size, 3, 224, 224).to(device)
+
+        # Warm-up
+        for i in range(5):
+            with torch.no_grad():
+                img_features = model.encode_image(dummy_image)
+
+        # Benchmark
+        torch.cuda.synchronize()
+        start_time = time.time()
+        for i in range(num_runs):
+            with torch.no_grad():
+                img_features = model.encode_image(dummy_image)
+        torch.cuda.synchronize()
+        duration = time.time() - start_time
+
+        throughput = (batch_size * num_runs) / duration
+
+        print(f"{model_name:<15} {duration:<12.3f} {throughput:<12.2f}")
+
+    print("=" * 70)
+
+
+# ===========================================
+# OPTIMIZATION 5: Combined Optimizations
+# ===========================================
+
+
+class OptimizedClip:
+    """CLIP model with all optimizations applied"""
+
+    def __init__(self, model_name: str = "ViT-B/32", use_fp16: bool = True, device: str = "cuda") -> None:
+        self.model, self.preprocess = clip.load(model_name, device=device)
+        self.device = device
+        self.use_fp16 = use_fp16 and torch.cuda.is_available()
+        self.model.eval()
+
+        # Text embedding cache
+        self.text_cache = TextEmbeddingCache(self.model, device=device)
+
+    def encode_text(self, texts: List[str]) -> torch.Tensor:
+        """Encodes text with caching"""
+        if self.use_fp16:
+            with torch.amp.autocast("cuda"):  # type: ignore
+                text_features = self.text_cache.encode_text(texts)
+            return text_features.float()  # Convert to float32 to match image features
+        else:
+            return self.text_cache.encode_text(texts)
+
+    def encode_image(self, images: torch.Tensor) -> torch.Tensor:
+        """Encodes image with optional FP16"""
+        if self.use_fp16:
+            with torch.no_grad(), torch.amp.autocast("cuda"):  # type: ignore
+                img_features = self.model.encode_image(images.to(self.device))
+                img_features /= img_features.norm(dim=-1, keepdim=True)
+            return img_features.float()
+        else:
+            with torch.no_grad():
+                img_features = self.model.encode_image(images.to(self.device))
+                img_features /= img_features.norm(dim=-1, keepdim=True)
+            return img_features
+
+    def classify_images(self, images: List[Image.Image], categories: List[str]) -> Dict[str, float]:
+        """Classify images into categories"""
+        img_tensors = torch.stack([self.preprocess(img) for img in images]).to(self.device)  # type: ignore
+
+        # Encode images
+        img_features = self.encode_image(img_tensors)
+
+        # Encode text
+        text_features = self.encode_text(categories)
+
+        # Compute similarity
+        similarities = (100 * img_features @ text_features.T).softmax(dim=-1)
+
+        values, indices = similarities[0].topk(len(categories))
+
+        results = {
+            "predictions": [
+                {"category": categories[idx], "probability": val.item()} for val, idx in zip(values, indices)
+            ],
+            "cache_stats": self.text_cache.get_stats(),
+        }
+
+        return results
+
+
+def combined_optimizations():
+    print("\n=== Combined CLIP Optimizations Demo ===\n")
+    opt_clip = OptimizedClip(model_name="ViT-B/32", use_fp16=True, device=device)
+    categories = ["a dog", "a cat", "a bird", "a car", "a person"]
+    num_images = 5
+    dummy_images = [Image.fromarray((np.random.rand(224, 224, 3) * 255).astype(np.uint8)) for _ in range(num_images)]
+
+    start_time = time.time()
+    results_list = []
+
+    batch_size = 16
+
+    for i in range(0, num_images, batch_size):
+        batch_images = dummy_images[i : i + batch_size]
+        results = opt_clip.classify_images(batch_images, categories)
+        results_list.append(results["predictions"])
+
+    total_time = time.time() - start_time
+    print(f"Total time: {total_time:.3f}s\n")
+    print(f"Throughput: {num_images / total_time:.2f} images/sec\n")
+    print(f"Average Latency: {total_time / num_images *1000:.3f}ms per image\n")
+
+
+def image_search():
+    """Image search system using optimized CLIP"""
+    print("\n=== Production Image Search Demo ===\n")
+
+    opt_clip = OptimizedClip(model_name="ViT-B/32", use_fp16=True, device=device)
+
+    num_images = 1000
+    image_embeddings = []
+
+    batch_size = 32
+    for i in range(0, num_images, batch_size):
+        batch = torch.randn(batch_size, 3, 224, 224).to(device)
+
+        embeddings = opt_clip.encode_image(batch)
+        image_embeddings.append(embeddings)
+
+    image_embeddings = torch.cat(image_embeddings, dim=0)
+    print(f"Indexed {num_images} images.")
+
+    # Search query
+    queries = [
+        "a cute dog playing in the park",
+        "modern architecture building",
+        "delicious food on a plate",
+        "beautiful sunset over ocean",
+        "person riding a bicycle",
+    ]
+
+    search_start = time.time()
+    for query in queries:
+        text_embedding = opt_clip.encode_text([query])
+
+        similarities = (100 * image_embeddings @ text_embedding.T).squeeze()
+
+        top_k = 5
+        values, indices = similarities.topk(top_k)
+
+        print(f"\nQuery: {query}")
+        for score, idx in zip(values, indices):
+            print(f"Image Index: {idx.item()}, Similarity Score: {score.item():.4f}")
+    search_time = time.time() - search_start
+
+    print(f"Average search time: {search_time / len(queries):.3f}s per query")
+
+
 if __name__ == "__main__":
     print("=" * 50)
     print("CLIP OPTIMIZATIONS")
     print("=" * 50)
 
-    # demo_text_caching()
+    demo_text_caching()
 
-    # benchmark_fp16_quantization()
+    fp16_quantization_benchmark()
+
+    batch_processing_benchmark()
+
+    model_variants_benchmark()
+
+    combined_optimizations()
+
+    image_search()
