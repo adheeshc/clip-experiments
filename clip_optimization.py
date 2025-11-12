@@ -1,19 +1,4 @@
-"""
-CLIP Model Optimization Experiments
-
-demo_text_caching()
-
-benchmark_fp16_quantization()
-
-benchmark_batch_processing()
-
-benchmark_model_variants()
-
-demo_optimized_clip()
-
-production_image_search()
-
-"""
+"""CLIP Model Optimization Experiments"""
 
 import pickle as pkl
 import time
